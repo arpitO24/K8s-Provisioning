@@ -1,0 +1,114 @@
+---
+- hosts: all
+  gather_facts: yes
+  become: yes
+
+  #vars_files:
+  # - vars/vars.yaml
+
+  pre_tasks:
+    - name: Update apt cache if needed.
+      apt: update_cache=yes cache_valid_time=86400
+
+  tasks:
+    - name: Disable swap in fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab  
+        regexp: '^swap'
+        state: absent
+    
+    - name: Turn off swap
+      command: swapoff -a
+    
+    - name: stop and disable firewall
+      ansible.builtin.service:
+        name: ufw
+        state: stopped
+        enabled: no
+
+    - name: Enable kernel modules
+      ansible.builtin.blockinfile:
+        path: /etc/modules-load.d/containerd.conf
+        create: yes
+        block: |
+          overlay
+          br_netfilter
+
+    - name: Load Kernel Modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        - overlay
+        - br_netfilter
+
+    - name: Add kernel settings
+      ansible.builtin.blockinfile:
+        path: /etc/sysctl.d/kubernetes.conf
+        create: yes
+        block: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.ipv4.ip_forward                 = 1
+
+    - name: Sysctl
+      command: sysctl --system
+
+    - name: Install containerd runtime
+      ansible.builtin.package:
+        name: 
+          - containerd 
+          - apt-transport-https
+        state: present
+
+    - name: Create containerd directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Create default containerd config file
+      ansible.builtin.shell:
+        cmd: containerd config default > /etc/containerd/config.toml
+
+    - name: Modify containerd config file
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^(\s*)SystemdCgroup ='
+        line: '\1SystemdCgroup = true'
+        backrefs: yes
+
+    - name: Restart containerd service
+      ansible.builtin.service:
+        name: containerd
+        state: restarted
+        enabled: true
+
+    - name: Add apt repo for K8s
+      block:
+        - ansible.builtin.get_url:
+            url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+            dest: /etc/apt/trusted.gpg.d/k8srepo.gpg
+
+        - ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/k8srepo.gpg] http://apt.kubernetes.io/ kubernetes-xenial main"
+            state: present
+
+    - name: Install Kubernetes components (kubeadm, kubelet, kubectl)
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+        allow_downgrade: true
+      with_items:
+        - kubeadm=1.24.0-00
+        - kubectl=1.24.0-00
+        - kubelet=1.24.0-00
+
+    - name: Update hosts file
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        create: no
+        block: |
+          172.16.16.100   kmaster.example.com     kmaster
+          172.16.16.101   kworker1.example.com    kworker1
+          172.16.16.102   kworker2.example.com    kworker2

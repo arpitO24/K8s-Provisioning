@@ -1,0 +1,22 @@
+---
+- hosts: all
+  gather_facts: yes
+  become: yes
+
+  tasks:
+
+    - name: Run Kubeadm commands
+      ansible.builtin.command: "{{ item }}"
+      with_items:
+        - kubeadm config images pull
+        - kubeadm init --apiserver-advertise-address=172.16.16.100 --pod-network-cidr=192.168.0.0/16
+        - kubectl --kubeconfig=/etc/kubernetes/admin.conf create -f https://docs.projectcalico.org/v3.18/manifests/calico.yaml
+
+    - name: Save Kubeadm join command
+      when: inventory_hostname in groups['kmaster']
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: result
+
+    - name: Run join command on worker nodes
+      when: inventory_hostname in groups['workers']
+      ansible.builtin.shell: "{{ hostvars['172.16.16.100']['result']['stdout'] }}"
